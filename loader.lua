@@ -38,15 +38,16 @@ local function ScriptFound(placeId)
 end
 
 local function RunScript(placeId)
-	if ScriptFound(placeId) then
-		local filename = scripts[placeId]
-		local scriptURL = githubURL .. filename
-		local script = game:HttpGet(scriptURL)
-		return loadstring(script)()
-	end
+	if not ScriptFound(placeId) then
+        warn("Script not found: " .. placeId)
+		return
+    end
+
+	local filename = scripts[placeId]
+	local scriptURL = githubURL .. filename
+	local script = game:HttpGet(scriptURL)
+	_G.keyFound = true
+	return loadstring(script)()
 end
 
-if ScriptFound(placeId) then
-	_G.keyFound = true
-	RunScript(placeId)
-end
+RunScript(placeId)

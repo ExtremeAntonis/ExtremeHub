@@ -39,9 +39,9 @@ end
 
 local function RunScript(placeId)
 	if not ScriptFound(placeId) then
-        warn("Script not found: " .. placeId)
+        	warn("Script not found: " .. placeId)
 		return
-    end
+    	end
 
 	local filename = scripts[placeId]
 	local scriptURL = githubURL .. filename

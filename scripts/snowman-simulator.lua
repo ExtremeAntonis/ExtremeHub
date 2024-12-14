@@ -1,5 +1,7 @@
 --!strict
 
+local HttpService = game:GetService("HttpService")
+
 local function fireproximityprompt(ProximityPrompt: ProximityPrompt?)
     if ProximityPrompt then
         local oldHoldDuration = ProximityPrompt.HoldDuration
@@ -13,7 +15,7 @@ local function fireproximityprompt(ProximityPrompt: ProximityPrompt?)
 end
 
 local success: boolean, result: string = pcall(function()
-    local response: string? = game:HttpGet("https://raw.githubusercontent.com/ExtremeAntonis/Venyx-UI-Library/main/source2")
+    local response: string? = game:HttpGet("https://raw.githubusercontent.com/ExtremeAntonis/Venyx-UI-Library/main/source2.lua")
     if response then
         local loadstring: any = loadstring(response)
         if loadstring then
@@ -33,23 +35,55 @@ local config = {
     ["claim_gift_before_rebirth"] = false,
     ["hide_popups"] = false,
     ["infinite_double_jumps"] = false,
-    ["selected_boss"] = "",
+    ["selected_boss"] = false,
     ["auto_fire"] = false,
     ["fire_rate"] = 25,
     ["fire_only_in_zone"] = false,
     ["target_all_bosses"] = false,
     ["target_priority"] = "Closest",
     ["killing_mode"] = "Normal",
+    ["selected_teleport_boss"] = false,
+    ["selected_present"] = false,
+    ["auto_open_present"] = false,
 }
 
+local function SaveConfig(): ()
+    if not isfolder("extremehub") then makefolder("extremehub") end
+
+    if isfolder("extremehub") then
+        local encodedConfig: string = HttpService:JSONEncode(config)
+        writefile("extremehub/snowman-simulator.txt", encodedConfig)
+    end
+end
+
+local function LoadConfig(): ()
+    local path: string = "extremehub/snowman-simulator.txt"
+    if isfolder("extremehub") then
+        if isfile(path) then
+            local encodedConfig: string = readfile(path)
+            if encodedConfig then
+                local decodedConfig = HttpService:JSONDecode(encodedConfig)
+                for name, value in pairs(decodedConfig) do
+                    if config[name] ~= nil then
+                        config[name] = value
+                    end
+                end
+            end
+        end
+    end
+end
+
+LoadConfig()
+
 local function SetConfig(name: string, value: any): ()
-    if not name then error("Invalid parameters passed to SetConfig.") end
+    if name == nil or value == nil then error("Invalid parameters passed to SetConfig.") end
     if config[name] == nil then error("The specified toggle name does not exist in the configuration.") end
     config[name] = value
+    SaveConfig()
 end
 
 local function GetConfig(name: string): any
-    if not name then error("Invalid parameter passed to GetConfig.") end
+    if name == nil then error("Invalid parameter passed to GetConfig.") end
     if config[name] == nil then error("The specified toggle name does not exist in the configuration.") end
     return config[name]
 end
@@ -68,7 +102,13 @@ end
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui: Folder = LocalPlayer.PlayerGui
+local CoreGui = game:GetService("CoreGui")
 
+for _, ScreenGui: Instance in CoreGui:GetChildren() do
+    if ScreenGui.Name == "extremehub" and ScreenGui:IsA("ScreenGui") then
+        ScreenGui:Destroy()
+    end
+end
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GiftSpawns = game:GetService("Workspace").giftSpawns
@@ -120,7 +160,7 @@ end
 
 section1:addToggle({
     title = "Auto Collect Snow",
-    toggled = false,
+    toggled = GetConfig("auto_collect_snow"),
     callback = function(value: boolean)
         SetConfig("auto_collect_snow", value)
         while GetConfig("auto_collect_snow") do task.wait()
@@ -150,7 +190,7 @@ end
 
 section1:addToggle({
     title = "Auto Add Snow To Snowman",
-    toggled = false,
+    toggled = GetConfig("auto_add_snow_to_snowman"),
     callback = function(value: boolean)
         SetConfig("auto_add_snow_to_snowman", value)
         while GetConfig("auto_add_snow_to_snowman") do task.wait(.5)
@@ -209,7 +249,7 @@ end
 
 section1:addToggle({
     title = "Auto Rebirth",
-    toggled = false,
+    toggled = GetConfig("auto_rebirth"),
     callback = function(value: boolean)
         SetConfig("auto_rebirth", value)
         while GetConfig("auto_rebirth") do task.wait(.25)
@@ -224,7 +264,7 @@ section1:addToggle({
 
 section1:addToggle({
     title = "Claim Gift Before Rebirth",
-    toggled = false,
+    toggled = GetConfig("claim_gift_before_rebirth"),
     callback = function(value: boolean)
         SetConfig("claim_gift_before_rebirth", value)
     end
@@ -246,7 +286,7 @@ end
 
 section1:addToggle({
     title = "Hide PopUps",
-    toggled = false,
+    toggled = GetConfig("hide_popups"),
     callback = function(value: boolean): ()
         SetConfig("hide_popups", value)
     end
@@ -492,7 +532,7 @@ end
 
 section1:addDropdown({
     title = "Select Boss",
-    default = nil,
+    default = GetConfig("selected_boss"),
     list = Bosses,
     callback = function(value: string)
         SetConfig("selected_boss", value)
@@ -501,7 +541,7 @@ section1:addDropdown({
 
 section1:addToggle({
     title = "Auto Fire",
-    toggled = false,
+    toggled = GetConfig("auto_fire"),
     callback = function(value: boolean) : ()
         SetConfig("auto_fire", value)
         while GetConfig("auto_fire") do task.wait(1/GetConfig("fire_rate"))
@@ -537,7 +577,7 @@ section1:addToggle({
 
 section1:addDropdown({
     title = "Target Priority",
-    default = nil,
+    default = GetConfig("target_priority"),
     list = {"Lowest Health", "Highest Health", "Closest", "Furthest", "Lowest MaxHealth", "Highest MaxHealth", "Highest Level", "Lowest Level"},
     callback = function(value: string)
         SetConfig("target_priority", value)
@@ -546,41 +586,40 @@ section1:addDropdown({
 
 section1:addDropdown({
     title = "Killing Mode",
-    default = nil,
+    default = GetConfig("killing_mode"),
     list = {"Normal", "Unstoppable"},
     callback = function(value: string): ()
         SetConfig("killing_mode", value)
     end
 })
 
-local fire_rate_toggle
-fire_rate_toggle = section1:addSlider({
+local fire_rate_slider
+fire_rate_slider = section1:addSlider({
     title = `Fire Rate {GetConfig("fire_rate")}.0 (Shots Per Second)`,
     default = GetConfig("fire_rate"),
     min = 1,
     max = 100,
     callback = function(value: boolean): ()
         SetConfig("fire_rate", value)
-        fire_rate_toggle.Options:Update({title= `Fire Rate: {value}.0 (Shots Per Second)`})
+        fire_rate_slider.Options:Update({title= `Fire Rate: {value}.0 (Shots Per Second)`})
     end
 })
 
-local SelectedBossToTeleportTo: string?
-
 section2:addDropdown({
     title = "Select Boss",
-    default = nil,
+    default = GetConfig("selected_teleport_boss"),
     list = Bosses,
-    callback = function(value): ()
-        SelectedBossToTeleportTo = value
+    callback = function(value: string): ()
+        SetConfig("selected_teleport_boss", value)
     end
 })
 
 section2:addButton({
     title = "Teleport",
     callback = function()
-        if SelectedBossToTeleportTo then
-            local CFrame = BossTeleportSpots[SelectedBossToTeleportTo]
+        local selected_teleport_boss = GetConfig("selected_teleport_boss")
+        if selected_teleport_boss then
+            local CFrame = BossTeleportSpots[selected_teleport_boss]
             if CFrame then
                 LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame
             end
@@ -589,11 +628,65 @@ section2:addButton({
 })
 
 local page3 = UI:addPage({
+    title = "Presents",
+    icon = 13848210004
+})
+
+local section1 = page3:addSection({
+    title = "Presents"
+})
+
+local PresentPedestals = game:GetService("Workspace").PresentPedestals
+local PresentNames = {}
+local PresentTiers = {}
+
+for _, instance in pairs(PresentPedestals:GetChildren()) do
+    local sign = instance:FindFirstChild("sign") :: BasePart?
+    if sign then
+        local SurfaceGui = sign:FindFirstChild("SurfaceGui") :: SurfaceGui?
+        if SurfaceGui then
+            local TextLabel = SurfaceGui:FindFirstChild("TextLabel") :: TextLabel?
+            if TextLabel then
+                local name = TextLabel.Text
+                local tier = tonumber(instance.Name)
+                if name and tier then
+                    PresentNames[tier] = name
+                    PresentTiers[name] = tier
+                end
+            end
+        end
+    end
+end
+
+section1:addDropdown({
+    title = "Select Present",
+    default = GetConfig("selected_present"),
+    list = PresentNames,
+    callback = function(value: string): ()
+        SetConfig("selected_present", value)
+    end
+})
+
+section1:addToggle({
+    title = "Auto Open",
+    toggled = GetConfig("auto_open_present"),
+    callback = function(value: boolean): ()
+        SetConfig("auto_open_present", value)
+        while GetConfig("auto_open_present") do task.wait(.25)
+            local tier = PresentTiers[GetConfig("selected_present")]
+            if tier then
+                ReplicatedStorage.Signals.presentEvent:FireServer("openPresent", tier)
+            end
+        end
+    end
+})
+
+local page4 = UI:addPage({
     title = "Misc",
     icon = 15196113798
 })
 
-local section1 = page3:addSection({
+local section1 = page4:addSection({
     title = "Misc"
 })
 
@@ -601,7 +694,7 @@ local infinite_double_jumps_connection: RBXScriptConnection?
 
 section1:addToggle({
     title = "Infinite Double Jumps",
-    toggled = false,
+    toggled = GetConfig("infinite_double_jumps"),
     callback = function(value: boolean): ()
         SetConfig("infinite_double_jumps", value)
         while GetConfig("infinite_double_jumps") do task.wait(1)
@@ -627,31 +720,31 @@ section1:addToggle({
     end
 })
 
-local page4 = UI:addPage({
+local page5 = UI:addPage({
     title = "Info",
     icon = 15084116748
 })
 
-local section1 = page4:addSection({
+local section1 = page5:addSection({
     title = "Join My Discord Server"
 })
 
-local section2 = page4:addSection({
+local section2 = page5:addSection({
     title = "Last Updated"
 })
 
-local section3 = page4:addSection({
+local section3 = page5:addSection({
     title = "Contributors"
 })
 
-
-local section4 = page4:addSection({
-    title = "Known Issues"
-})
-
-local section5 = page4:addSection({
+local section4 = page5:addSection({
     title = "Open Source Script"
 })
+
+local section5 = page5:addSection({
+    title = ""
+})
+
 
 section1:addButton({
     title = "discord.gg/6ZDtkxqJS4",
@@ -675,18 +768,45 @@ section3:addButton({
 })
 
 section4:addButton({
-    title = "Auto Fire in Bosses is not compatible with Solara.",
-    callback = function(): ()
-        setclipboard("Auto Fire in Bosses is not compatible with Solara.")
-    end
-})
-
-section5:addButton({
     title = "Feel free to use or modify. Just credit me for copied parts.",
     callback = function(): ()
         setclipboard("Feel free to use or modify. Just credit me for copied parts.")
     end
 })
+
+
+local mainUI = CoreGui:FindFirstChild("extremehub") :: ScreenGui?
+
+section5:addButton({
+    title = "Destroy",
+    callback = function(): ()
+        if mainUI then
+            mainUI:Destroy()
+        end
+    end
+})
+
+section5:addButton({
+    title = "Reset Settings (Effective Next Script Run)",
+    callback = function(): ()
+        local path = "extremehub/snowman-simulator.txt"
+        if isfolder("extremehub") then
+            if isfile(path) then
+                delfile(path)
+            end
+        end
+    end
+})
+
+if mainUI then
+    mainUI.Destroying:Connect(function()
+        for name, value in config do
+            if typeof(value) == "boolean" then
+                config[name] = false
+            end
+        end
+    end)
+end
 
 
 local extremehub = [[
@@ -703,6 +823,6 @@ local extremehub = [[
 print("\n", extremehub)
 
 UI:SelectPage({
-    page = UI.pages[4], 
+    page = UI.pages[5], 
     toggle = true
 })

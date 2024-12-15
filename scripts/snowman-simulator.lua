@@ -42,6 +42,10 @@ local config = {
     ["target_all_bosses"] = false,
     ["target_priority"] = "Closest",
     ["killing_mode"] = "Normal",
+    ["enemy_auto_fire"] = false,
+    ["enemy_fire_rate"] = 25,
+    ["enemy_target_priority"] = "Closest",
+    ["enemy_killing_mode"] = "Normal",
     ["selected_teleport_boss"] = false,
     ["selected_present"] = false,
     ["auto_open_present"] = false,
@@ -130,6 +134,10 @@ local section1 = page1:addSection({
     title = "Farming"
 })
 
+local section2 = page1:addSection({
+    title = "Current Session Stats"
+})
+
 local getMaxSnowballSize
 
 local successRollSnowballShared, errorRollSnowballShared = pcall(function()
@@ -188,19 +196,27 @@ local function GetSnowmanBase()
     return nil
 end
 
+--When you Respawn while you are adding snow to the snowman sometimes the game glitches and the value addingToSnowman is stuck as true so to fix this i just check if it has been over 15 seconds since snow has been added to the snowman
+local lastTimeAddedToSnowman = os.time()
+local TIMEOUT = 15
+
 section1:addToggle({
     title = "Auto Add Snow To Snowman",
     toggled = GetConfig("auto_add_snow_to_snowman"),
     callback = function(value: boolean)
         SetConfig("auto_add_snow_to_snowman", value)
         while GetConfig("auto_add_snow_to_snowman") do task.wait(.5)
-            pcall(function()
+            local success, error = pcall(function()
                 local snowmanBase = GetSnowmanBase()
                 local snowballs = LocalPlayer.localData.snowballs.Value
-                if snowmanBase and not snowmanBase.rebirthActive.Value and snowballs > 0 and not snowmanBase.addingToSnowman.Value then
+                if (snowmanBase and not snowmanBase.rebirthActive.Value and snowballs > 0 and not snowmanBase.addingToSnowman.Value) or lastTimeAddedToSnowman + TIMEOUT < os.time() then
+                    lastTimeAddedToSnowman = os.time()
                     game:GetService("ReplicatedStorage").Signals.addToSnowman:FireServer("addToSnowman")
                 end
             end)
+            if not success then
+                error("Auto Add Snow To Snowman:", error)
+            end
         end
     end
 })
@@ -292,6 +308,69 @@ section1:addToggle({
     end
 })
 
+local function calculateHourlyRate(getValueFunction: () -> number, updateText: (hourlyRate: number) -> ())
+    -- Create the session table to store the state
+    local self = {}
+    
+    -- Initialize session variables
+    self.initialValue = getValueFunction()  -- Start value
+    self.startTime = os.time()  -- Start time
+
+    -- Define the Reset method for the session
+    function self:Reset()
+        self.initialValue = getValueFunction()  -- Reset the value
+        self.startTime = os.time()  -- Reset the start time
+    end
+
+    -- Calculate hourly rate continuously
+    spawn(function()
+        while true do
+            task.wait(1)
+
+            local currentValue = getValueFunction()
+            local currentTime = os.time()
+            local elapsedTime = currentTime - self.startTime
+
+            if elapsedTime > 0 then
+                local difference = currentValue - self.initialValue
+                local hourlyRate = (difference / elapsedTime) * 3600
+                hourlyRate = math.round(hourlyRate * 10) / 10  -- Round to 1 decimal
+                updateText(hourlyRate)
+            end
+        end
+    end)
+
+    return self  -- Return the session with the Reset method
+end
+
+local rebirths_per_hour
+rebirths_per_hour = section2:addButton({
+    title = "",
+    callback = function(): () end
+})
+
+local reset_rebirth_session
+
+reset_rebirth_session = calculateHourlyRate(
+    function()
+        return LocalPlayer.leaderstats.Rebirths.Value
+    end, 
+    function(hourlyRate: number)
+        pcall(function()
+            rebirths_per_hour.Options:Update({title = `Rebirths/Hour: {hourlyRate}`})
+        end)
+    end
+)
+
+section2:addButton({
+    title = "Reset Session",
+    callback = function()
+        if reset_rebirth_session then
+            reset_rebirth_session:Reset()
+        end
+    end
+})
+
 local page2 = UI:addPage({
     title = "Bosses",
     icon = 15197783428
@@ -303,6 +382,10 @@ local section1 = page2:addSection({
 
 local section2 = page2:addSection({
     title = "Teleport"
+})
+
+local section3 = page2:addSection({
+    title = "Current Session Stats"
 })
 
 local Bosses = {}
@@ -326,8 +409,11 @@ for _, instance in steps:GetChildren() do
 end
 
 local function ThrowSnowball(from: CFrame, to: CFrame): ()
+    if from ~= to then
+        from = from * CFrame.new(0, 5, 0)
+    end
     local RelativePosition: Vector3 = (to.Position - from.Position) * 10
-    SnowballProjectileClient.playerSnowball(LocalPlayer, RelativePosition, 125, from * CFrame.new(0, 5, 0))
+    SnowballProjectileClient.playerSnowball(LocalPlayer, RelativePosition, 125, from)
 end
 
 local function GetLocalPlayerCFrame(): CFrame?
@@ -361,50 +447,21 @@ local function IsPlayerInBossZone(name: string?): boolean
     return not GetConfig("fire_only_in_zone")
 end
 
-local function GetBossCFrame(name: string?): CFrame?
-    if name then
-        for _, instance in pairs(steps:GetChildren()) do
-            if instance.Name == "bossLedge" then
-                local BossFolder: Folder? = instance:FindFirstChild("Boss")
-                if BossFolder then
-                    local Boss = BossFolder:FindFirstChild("Boss") :: Model?
-                    if Boss then
-                        local Configuration = Boss:FindFirstChild("Configuration") :: Folder?
-                        if Configuration then
-                            local bossName = Configuration:FindFirstChild("bossName") :: StringValue?
-                            local state = Configuration:FindFirstChild("state") :: StringValue?
-                            if bossName and state then
-                                if bossName.Value == name then
-                                    if state.Value == "alive" then
-                                        local HumanoidRootPart = Boss:FindFirstChild("HumanoidRootPart") :: BasePart?
-                                        if HumanoidRootPart then
-                                            return HumanoidRootPart.CFrame
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
 export type BossInfo = {
-    [string]: {
-        currentHealth: number,
-        currentCFrame: CFrame,
-        level: number,
-        spawnPosition: Vector3,
-        bossName: string,
-        maxHealth: number,
-        state: string,
-    },
+    currentHealth: number,
+    currentCFrame: CFrame,
+    level: number,
+    spawnPosition: Vector3,
+    bossName: string,
+    maxHealth: number,
+    state: string, 
 }
 
-local function GetBossInfo(): BossInfo    
+export type BossesInfo = {
+    [string]: BossInfo,
+}
+
+local function GetBossInfo(): BossesInfo    
     local Info = {}
     for _, instance in pairs(steps:GetChildren()) do
         if instance.Name == "bossLedge" then
@@ -442,10 +499,12 @@ local function GetBossInfo(): BossInfo
     return Info
 end
 
-local function GetBoss(): string?
+
+
+local function GetBoss(): BossInfo?
     local TargetPriority = GetConfig("target_priority")
     local TargetAllBosses = GetConfig("target_all_bosses")
-    local BossInfo: BossInfo = GetBossInfo()
+    local BossInfo: BossesInfo = GetBossInfo()
     if TargetAllBosses then
         local BossName = nil
         if TargetPriority == "Lowest Health" then
@@ -525,9 +584,9 @@ local function GetBoss(): string?
                 end
             end
         end
-        return BossName
+        return BossInfo[BossName]
     end
-    return GetConfig("selected_boss")
+    return BossInfo[GetConfig("selected_boss")]
 end
 
 section1:addDropdown({
@@ -545,14 +604,13 @@ section1:addToggle({
     callback = function(value: boolean) : ()
         SetConfig("auto_fire", value)
         while GetConfig("auto_fire") do task.wait(1/GetConfig("fire_rate"))
-            local BossName: string? = GetBoss()
-            local BossCFrame: CFrame? = GetBossCFrame(BossName)
+            local Boss: BossInfo? = GetBoss()
             local LocalPlayerCFrame: CFrame? = GetLocalPlayerCFrame()
-            if BossCFrame and LocalPlayerCFrame and IsPlayerInBossZone(BossName) then
+            if Boss and Boss.currentCFrame and LocalPlayerCFrame and IsPlayerInBossZone(Boss.bossName) then
                 if GetConfig("killing_mode") == "Normal" then
-                    ThrowSnowball(LocalPlayerCFrame, BossCFrame)
+                    ThrowSnowball(LocalPlayerCFrame, Boss.currentCFrame)
                 elseif GetConfig("killing_mode") == "Unstoppable" then
-                    ThrowSnowball(BossCFrame, BossCFrame)
+                    ThrowSnowball(Boss.currentCFrame, Boss.currentCFrame)
                 end
             end
         end
@@ -627,12 +685,205 @@ section2:addButton({
     end
 })
 
+local BossKillsSessions = {}
+
+local BossKills = LocalPlayer.localData.bossKills
+for _, kills in pairs(BossKills:GetChildren()) do
+    local button = section3:addButton({title = "", callback = function(): () end})
+    local session = calculateHourlyRate(function() return kills.Value end, 
+        function(hourlyRate: number)
+            pcall(function()
+                button.Options:Update({title = `{kills.Name} Kills/Hour: {hourlyRate}`})
+            end)
+        end
+    )
+    table.insert(BossKillsSessions, session)
+end
+
+section3:addButton({
+    title = "Reset Session",
+    callback = function()
+        for _, session in pairs(BossKillsSessions) do
+            session:Reset()
+        end
+    end
+})
+
 local page3 = UI:addPage({
+    title = "Enemies",
+    icon = 15197783428
+})
+
+local section1 = page3:addSection({
+    title = SnowballProjectileClient and `Farming` or `Farming Disabled (Failed to Require SnowballProjectileClient)`
+})
+
+export type EnemyInfo = {
+    currentHealth: number,
+    maxHealth: number,
+    currentCFrame: CFrame,
+    spawnPosition: CFrame,
+}
+
+export type EnemiesInfo = {
+    [number]: EnemyInfo,
+}
+
+local minionHolderFolders = {}
+
+for _, instance in pairs(workspace:GetDescendants()) do
+    if instance:IsA("Folder") and instance.Name == "minionHolder" then
+        table.insert(minionHolderFolders, instance)
+    end
+end
+
+local function GetEnemyInfo(): EnemiesInfo    
+    local Info = {}
+    for _, minionHolder: Folder in pairs(minionHolderFolders) do
+        for _, minion in minionHolder:GetChildren() do
+            local hitBox = minion:FindFirstChild("hitBox") :: BasePart?
+            local currentHealth = minion:FindFirstChild("hitCount") :: IntValue?
+            local maxHealth = minion:FindFirstChild("hitLife") :: IntValue?
+            local currentCFrame = (hitBox and hitBox.CFrame or nil) :: CFrame?
+            local spawnPosition = minion:FindFirstChild("origCFrame") :: CFrameValue?
+            if hitBox and currentHealth and maxHealth and currentCFrame and spawnPosition then
+                Info[#Info+1] = {
+                    ["currentHealth"] = currentHealth.Value,
+                    ["maxHealth"] = maxHealth.Value,
+                    ["currentCFrame"] = currentCFrame,
+                    ["spawnPosition"] = spawnPosition.Value,
+                }
+            end
+        end 
+    end
+    return Info
+end
+
+local function GetEnemy(): EnemyInfo?
+    local TargetPriority = GetConfig("enemy_target_priority")
+    local EnemyInfo: EnemiesInfo = GetEnemyInfo()
+    local Enemy = nil
+    if TargetPriority == "Lowest Health" then
+        local lowestHealth = math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.currentHealth < lowestHealth and boss.currentHealth > 0 then
+                lowestHealth = boss.currentHealth
+                Enemy = name
+            end
+        end
+    elseif TargetPriority == "Highest Health" then
+        local highestHealth = -math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.currentHealth > highestHealth and boss.currentHealth > 0 then
+                highestHealth = boss.currentHealth
+                Enemy = name
+            end
+        end
+    elseif TargetPriority == "Furthest" then
+        local furthestDistance = -math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.currentHealth > 0 then
+                local PlayerCFrame = GetLocalPlayerCFrame()
+                if PlayerCFrame then
+                    local distance = (PlayerCFrame.Position - boss.currentCFrame.Position).Magnitude
+                    if distance > furthestDistance then
+                        furthestDistance = distance
+                        Enemy = name
+                    end
+                end
+            end
+        end
+    elseif TargetPriority == "Closest" then
+        local nearestDistance = math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.currentHealth > 0 then
+                local PlayerCFrame = GetLocalPlayerCFrame()
+                if PlayerCFrame then
+                    local distance = (PlayerCFrame.Position - boss.currentCFrame.Position).Magnitude
+                    if distance < nearestDistance then
+                        nearestDistance = distance
+                        Enemy = name
+                    end
+                end
+            end
+        end
+    elseif TargetPriority == "Lowest MaxHealth" then
+        local lowestMaxHealth = math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.maxHealth < lowestMaxHealth and boss.currentHealth > 0 then
+                lowestMaxHealth = boss.maxHealth
+                Enemy = name
+            end
+        end
+    elseif TargetPriority == "Highest MaxHealth" then
+        local highestMaxHealth = -math.huge
+        for name, boss in pairs(EnemyInfo) do
+            if boss.maxHealth > highestMaxHealth and boss.currentHealth > 0 then
+                highestMaxHealth = boss.maxHealth
+                Enemy = name
+            end
+        end
+    end
+    return EnemyInfo[Enemy]
+end
+
+section1:addToggle({
+    title = "Auto Fire",
+    toggled = GetConfig("enemy_auto_fire"),
+    callback = function(value: boolean) : ()
+        SetConfig("enemy_auto_fire", value)
+        while GetConfig("enemy_auto_fire") do task.wait(1/GetConfig("enemy_fire_rate"))
+            local Enemy: EnemyInfo? = GetEnemy()
+            local LocalPlayerCFrame: CFrame? = GetLocalPlayerCFrame()
+            if Enemy and Enemy.currentCFrame and LocalPlayerCFrame then
+                if GetConfig("enemy_killing_mode") == "Normal" then
+                    ThrowSnowball(LocalPlayerCFrame, Enemy.currentCFrame)
+                elseif GetConfig("enemy_killing_mode") == "Unstoppable" then
+                    ThrowSnowball(Enemy.currentCFrame, Enemy.currentCFrame)
+                end
+            end
+        end
+    end
+})
+
+
+section1:addDropdown({
+    title = "Target Priority",
+    default = GetConfig("enemy_target_priority"),
+    list = {"Lowest Health", "Highest Health", "Closest", "Furthest", "Lowest MaxHealth", "Highest MaxHealth"},
+    callback = function(value: string)
+        SetConfig("enemy_target_priority", value)
+    end
+})
+
+section1:addDropdown({
+    title = "Killing Mode",
+    default = GetConfig("enemy_killing_mode"),
+    list = {"Normal", "Unstoppable"},
+    callback = function(value: string): ()
+        SetConfig("enemy_killing_mode", value)
+    end
+})
+
+local enemy_fire_rate_slider
+enemy_fire_rate_slider = section1:addSlider({
+    title = `Fire Rate {GetConfig("enemy_fire_rate")}.0 (Shots Per Second)`,
+    default = GetConfig("enemy_fire_rate"),
+    min = 1,
+    max = 100,
+    callback = function(value: boolean): ()
+        SetConfig("enemy_fire_rate", value)
+        enemy_fire_rate_slider.Options:Update({title= `Fire Rate: {value}.0 (Shots Per Second)`})
+    end
+})
+
+
+local page4 = UI:addPage({
     title = "Presents",
     icon = 13848210004
 })
 
-local section1 = page3:addSection({
+local section1 = page4:addSection({
     title = "Presents"
 })
 
@@ -681,12 +932,12 @@ section1:addToggle({
     end
 })
 
-local page4 = UI:addPage({
+local page5 = UI:addPage({
     title = "Misc",
     icon = 15196113798
 })
 
-local section1 = page4:addSection({
+local section1 = page5:addSection({
     title = "Misc"
 })
 
@@ -720,28 +971,28 @@ section1:addToggle({
     end
 })
 
-local page5 = UI:addPage({
+local page6 = UI:addPage({
     title = "Info",
     icon = 15084116748
 })
 
-local section1 = page5:addSection({
+local section1 = page6:addSection({
     title = "Join My Discord Server"
 })
 
-local section2 = page5:addSection({
+local section2 = page6:addSection({
     title = "Last Updated"
 })
 
-local section3 = page5:addSection({
+local section3 = page6:addSection({
     title = "Contributors"
 })
 
-local section4 = page5:addSection({
+local section4 = page6:addSection({
     title = "Open Source Script"
 })
 
-local section5 = page5:addSection({
+local section5 = page6:addSection({
     title = ""
 })
 
@@ -823,6 +1074,6 @@ local extremehub = [[
 print("\n", extremehub)
 
 UI:SelectPage({
-    page = UI.pages[5], 
+    page = UI.pages[6], 
     toggle = true
 })
